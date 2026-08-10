@@ -1,0 +1,86 @@
+# Minima — Git Ignore Rules
+
+# Root build output directory
+/build/
+/bin/
+/out/
+
+# Executables, binaries, and compiled object files
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.obj
+*.o
+*.res
+*.pdb
+*.ilk
+*.exp
+
+# Ignore unneeded NuGet package metadata, WinRT projection tools (wv2winrt, System.CommandLine), and .NET assemblies
+/vendor/webview2-pkg/tools/
+/vendor/webview2-pkg/lib/
+/vendor/webview2-pkg/lib_manual/
+/vendor/webview2-pkg/runtimes/
+/vendor/webview2-pkg/package/
+/vendor/webview2-pkg/_rels/
+/vendor/webview2-pkg/[Content_Types].xml
+/vendor/webview2-pkg/.signature.p7s
+/vendor/webview2-pkg/WebView2.tlb
+/vendor/webview2-pkg/build/native/include-winrt/
+/vendor/webview2-pkg/build/*.targets
+/vendor/webview2-pkg/build/*.xml
+/vendor/webview2-pkg/build/native/*.targets
+/vendor/webview2-pkg/buildTransitive/
+
+# Exception: Whitelist WebView2 C++ native SDK headers & static loader libs required for C++ build
+!vendor/webview2-pkg/build/native/include/**
+!vendor/webview2-pkg/build/native/x64/WebView2LoaderStatic.lib
+!vendor/webview2-pkg/build/native/x86/WebView2LoaderStatic.lib
+!vendor/webview2-pkg/build/native/arm64/WebView2LoaderStatic.lib
+
+# CMake build outputs
+/CMakeCache.txt
+/CMakeFiles/
+/Makefile
+/cmake_install.cmake
+/compile_commands.json
+/CTestTestfile.cmake
+/_deps/
+
+# Android & Gradle build artifacts
+.gradle/
+.kotlin/
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+*.apk
+*.aab
+*.dex
+*.class
+
+# IDE & Editor settings / caches
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+.claude/
+
+# Temporary files & archives
+*.tmp
+*.log
+*.swp
+*.swo
+vendor/wv2.zip
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store
