@@ -112,9 +112,10 @@ inline std::string HttpGetText(const std::wstring& host, const std::wstring& pat
     return result;
 }
 
-/// Streams a URL to disk, following redirects (WinHTTP does this by default), reporting progress.
-inline bool DownloadFile(const std::wstring& url, const std::wstring& destPath,
-                         std::atomic<long long>* downloaded, std::atomic<long long>* total) {
+/// One attempt of DownloadFile: appends to `partPath` (resuming with a Range request when
+/// it already holds data). Returns 1 = complete, 0 = failed but resumable, -1 = failed.
+inline int DownloadAttempt(const std::wstring& url, const std::wstring& partPath,
+                           std::atomic<long long>* downloaded, std::atomic<long long>* total) {
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
     wchar_t hostBuf[256]{}, pathBuf[2048]{};
@@ -123,57 +124,98 @@ inline bool DownloadFile(const std::wstring& url, const std::wstring& destPath,
     uc.lpszUrlPath = pathBuf;
     uc.dwUrlPathLength = 2048;
     uc.dwSchemeLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return -1;
     bool tls = uc.nScheme == INTERNET_SCHEME_HTTPS;
+
+    long long have = 0;
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (GetFileAttributesExW(partPath.c_str(), GetFileExInfoStandard, &fa))
+        have = (static_cast<long long>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
 
     HINTERNET hSession = WinHttpOpen(L"Minima/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return false;
-    bool ok = false;
+    if (!hSession) return 0;
+    int result = 0;
     HINTERNET hConnect = WinHttpConnect(hSession, uc.lpszHostName, uc.nPort, 0);
-    if (hConnect) {
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", uc.lpszUrlPath, nullptr, WINHTTP_NO_REFERER,
-                                                WINHTTP_DEFAULT_ACCEPT_TYPES, tls ? WINHTTP_FLAG_SECURE : 0);
-        if (hRequest) {
-            if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                WinHttpReceiveResponse(hRequest, nullptr)) {
-                DWORD statusCode = 0, statusSize = sizeof(statusCode);
-                WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                                    WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-                wchar_t lenBuf[32]{};
-                DWORD lenSize = sizeof(lenBuf);
-                if (total && WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
-                                                 lenBuf, &lenSize, WINHTTP_NO_HEADER_INDEX)) {
-                    total->store(_wcstoi64(lenBuf, nullptr, 10));
-                }
-                if (statusCode == 200) {
-                    HANDLE hFile = CreateFileW(destPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                               FILE_ATTRIBUTE_NORMAL, nullptr);
-                    if (hFile != INVALID_HANDLE_VALUE) {
-                        std::vector<char> buf(65536);
-                        DWORD avail = 0;
-                        ok = true;
-                        do {
-                            avail = 0;
-                            if (!WinHttpQueryDataAvailable(hRequest, &avail)) { ok = false; break; }
-                            if (avail == 0) break;
-                            DWORD toRead = std::min<DWORD>(avail, static_cast<DWORD>(buf.size()));
-                            DWORD read = 0;
-                            if (!WinHttpReadData(hRequest, buf.data(), toRead, &read)) { ok = false; break; }
-                            DWORD written = 0;
-                            WriteFile(hFile, buf.data(), read, &written, nullptr);
-                            if (downloaded) *downloaded += read;
-                        } while (avail > 0);
-                        CloseHandle(hFile);
-                    }
-                }
-            }
-            WinHttpCloseHandle(hRequest);
+    HINTERNET hRequest = hConnect ? WinHttpOpenRequest(hConnect, L"GET", uc.lpszUrlPath, nullptr, WINHTTP_NO_REFERER,
+                                                       WINHTTP_DEFAULT_ACCEPT_TYPES, tls ? WINHTTP_FLAG_SECURE : 0)
+                                  : nullptr;
+    if (hRequest) {
+        // Added to the request handle, so WinHTTP re-sends it when following redirects
+        // (e.g. Hugging Face → its CDN).
+        if (have > 0) {
+            std::wstring range = L"Range: bytes=" + std::to_wstring(have) + L"-\r\n";
+            WinHttpAddRequestHeaders(hRequest, range.c_str(), static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD);
         }
-        WinHttpCloseHandle(hConnect);
+        if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(hRequest, nullptr)) {
+            DWORD statusCode = 0, statusSize = sizeof(statusCode);
+            WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+            long long length = -1; // bytes this response will carry
+            wchar_t lenBuf[32]{};
+            DWORD lenSize = sizeof(lenBuf);
+            if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, lenBuf,
+                                    &lenSize, WINHTTP_NO_HEADER_INDEX))
+                length = _wcstoi64(lenBuf, nullptr, 10);
+            if (statusCode == 416) {
+                DeleteFileW(partPath.c_str()); // stale/oversized partial — start over next attempt
+            } else if (statusCode == 200 || (statusCode == 206 && have > 0)) {
+                bool resume = statusCode == 206;
+                if (!resume) have = 0; // server ignored the range: rewrite from scratch
+                if (total) total->store(length >= 0 ? have + length : 0);
+                if (downloaded) downloaded->store(have);
+                HANDLE hFile = CreateFileW(partPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                           resume ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hFile != INVALID_HANDLE_VALUE) {
+                    if (resume) SetFilePointer(hFile, 0, nullptr, FILE_END);
+                    std::vector<char> buf(65536);
+                    long long got = 0;
+                    bool readOk = true;
+                    for (;;) {
+                        DWORD avail = 0;
+                        if (!WinHttpQueryDataAvailable(hRequest, &avail)) { readOk = false; break; }
+                        if (avail == 0) break;
+                        DWORD toRead = std::min<DWORD>(avail, static_cast<DWORD>(buf.size()));
+                        DWORD read = 0, written = 0;
+                        if (!WinHttpReadData(hRequest, buf.data(), toRead, &read)) { readOk = false; break; }
+                        if (!WriteFile(hFile, buf.data(), read, &written, nullptr) || written != read) {
+                            readOk = false;
+                            break;
+                        }
+                        got += read;
+                        if (downloaded) *downloaded += read;
+                    }
+                    CloseHandle(hFile);
+                    // A connection that just closes early looks like a normal end of data —
+                    // only the byte count tells a truncated download from a complete one.
+                    if (readOk && (length < 0 || got == length)) result = 1;
+                }
+            } else {
+                result = -1; // 404 etc. — retrying won't help
+            }
+        }
+        WinHttpCloseHandle(hRequest);
     }
+    if (hConnect) WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    return ok;
+    return result;
+}
+
+/// Streams a URL to `destPath`, following redirects, reporting progress. Data goes to
+/// "<destPath>.part" first and is only renamed into place once the full Content-Length has
+/// arrived, so an interrupted download never leaves a truncated file that looks installed;
+/// dropped connections are resumed (Range) up to a few times, and across app restarts.
+inline bool DownloadFile(const std::wstring& url, const std::wstring& destPath,
+                         std::atomic<long long>* downloaded, std::atomic<long long>* total) {
+    std::wstring part = destPath + L".part";
+    for (int attempt = 0; attempt < 4; attempt++) {
+        int r = DownloadAttempt(url, part, downloaded, total);
+        if (r == 1) return MoveFileExW(part.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+        if (r < 0) return false;
+        Sleep(1000 * (attempt + 1));
+    }
+    return false;
 }
 
 /// Binds an ephemeral localhost port to find one that's free, then releases it for llama-server to use.

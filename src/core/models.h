@@ -7,7 +7,9 @@
 
 namespace minima {
 
-struct BookmarkEntry { std::wstring url, title; };
+// `folder` is empty for bookmarks made in Minima; imported ones keep their source folder
+// ("Bookmarks bar", "Other bookmarks/Recipes", …) so a big import stays organized.
+struct BookmarkEntry { std::wstring url, title, folder; };
 struct HistoryEntry { std::wstring url, title; long long time; };
 
 // The portable state of a browser tab — everything except the native webview handle,
@@ -27,6 +29,9 @@ struct TabModel {
     bool isAiPage = false;
     bool isSettingsPage = false;
     bool isWizardPage = false;
+    bool isHistoryPage = false; // History & Memory search page
+    bool isStartPage = false;   // the new-tab page (until the tab navigates elsewhere)
+    bool readerable = false;    // the page has an article reader view can show
 };
 
 struct Settings {
@@ -34,10 +39,22 @@ struct Settings {
     std::wstring aiModel = L"gemma-3-1b";
     bool adblock = true;
     bool restoreSession = true; // reopen last session's tabs on startup
+    bool aiEnabled = true;      // master switch for every on-device AI surface
+    bool aiIdleUnload = true;   // free the model's memory after a while unused
+    bool sleepTabs = true;      // suspend background tabs that haven't been used in a while
+    bool aiGpu = true;          // let the AI engine use the GPU (Vulkan) when available
+    bool savePasswords = true;  // WebView2's built-in password saving/filling
+    bool memory = false;        // remember the text of pages read, for search (off until chosen)
+    bool memoryAsked = false;   // the user has seen the Memory opt-in (wizard or start page)
+    std::wstring memoryExclude; // newline-separated hosts never remembered
+    int readerSize = 19;        // reader view: font size (px), font ("serif"/"sans"), theme
+    std::wstring readerFont = L"serif";
+    std::wstring readerTheme = L"auto";
 };
 
-// One tab in a saved session; `current` marks the tab that was active.
-struct SessionTab { std::wstring url; bool current; };
+// One tab in a saved session; `current` marks the tab that was active. The title lets a
+// restored tab show its name before it has loaded (tabs are restored lazily).
+struct SessionTab { std::wstring url; bool current; std::wstring title; };
 
 struct SearchEngine { const wchar_t* id; const wchar_t* label; const wchar_t* urlPrefix; };
 

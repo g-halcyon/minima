@@ -36,6 +36,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
          transition:background .12s; }
   .tab:hover:not(.active) { background:var(--hover); }
   .tab.active { background:var(--tab-active); color:var(--fg); box-shadow:0 1px 3px rgba(0,0,0,.15); }
+  .tab.sleep:not(.active) .t, .tab.sleep:not(.active) .favdot, .tab.sleep:not(.active) img.fav { opacity:.55; }
   .tab img.fav { width:15px; height:15px; border-radius:3px; flex:none; }
   .tab .favdot { flex:none; display:flex; opacity:.55; }
   .tab .favdot svg { width:14px; height:14px; }
@@ -150,6 +151,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     <span id="lock"></span>
     <input id="addr" placeholder="Search or enter address" spellcheck="false" autocomplete="off">
     <button id="shield" title="Ad &amp; tracker blocking"><span class="icw"></span></button>
+    <button id="reader" title="Reader view (F9)" style="display:none"></button>
     <button id="star" title="Bookmark (Ctrl+D)"></button>
   </div>
   <button id="ai" title="Ask this page with AI (Ctrl+K)">&#10022;</button>
@@ -187,8 +189,11 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     close:'<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     plus:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
     dl:'<svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M6 11l6 6 6-6"/><path d="M5 20h14"/></svg>',
+    reader:'<svg viewBox="0 0 24 24"><path d="M3 5.5C5.5 4.3 8.5 4.3 12 6c3.5-1.7 6.5-1.7 9-.5V19c-2.5-1.2-5.5-1.2-9 .5-3.5-1.7-6.5-1.7-9-.5z"/><path d="M12 6v13.5"/></svg>',
+    mem:'<svg viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5z"/><path d="M9 10h6M9 14h6"/></svg>',
+    bm:'<svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg>',
   };
-  for (const id of ['back','fwd','reload','star','dl','hist','settings'])
+  for (const id of ['back','fwd','reload','star','dl','hist','settings','reader'])
     document.getElementById(id).innerHTML = I[id];
   document.querySelector('#shield .icw').innerHTML = I.shield;
 
@@ -203,8 +208,8 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     tabs.innerHTML = '';
     for (const t of state.tabs) {
       const el = document.createElement('div');
-      el.className = 'tab' + (t.id === state.active ? ' active' : '');
-      el.title = t.url;
+      el.className = 'tab' + (t.id === state.active ? ' active' : '') + (t.sleep ? ' sleep' : '');
+      el.title = t.sleep && t.id !== state.active ? t.url + '\n(sleeping — wakes when opened)' : t.url;
       if (t.loading) {
         const s = document.createElement('div'); s.className = 'spin'; el.appendChild(s);
       } else if (t.fav) {
@@ -246,6 +251,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     tabs.appendChild(nt);
 
     const active = state.tabs.find(t => t.id === state.active);
+    document.getElementById('ai').style.display = state.aiEnabled === false ? 'none' : '';
     document.getElementById('back').disabled = !active || !active.canBack;
     document.getElementById('fwd').disabled = !active || !active.canFwd;
     if (!addrFocused) addr.value = active ? active.url.replace(/^about:blank$/, '') : '';
@@ -255,6 +261,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     else if (/^http:/.test(u)) { lock.innerHTML = I.globe; lock.className = ''; }
     else { lock.innerHTML = I.search; lock.className = ''; }
     document.getElementById('star').classList.toggle('active', !!(active && active.bookmarked));
+    document.getElementById('reader').style.display = active && active.reader ? '' : 'none';
     const shield = document.getElementById('shield');
     shield.className = state.adblock ? 'on' : 'off';
     shield.title = state.adblock
@@ -274,6 +281,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
   let suggestTimer = null;
 
   function looksLikeQuestion(v) {
+    if (!state.aiEnabled) return false;
     v = v.trim();
     if (!v || /^(https?:\/\/|www\.)/i.test(v)) return false;
     if (v.includes('.') && !v.includes(' ')) return false;
@@ -320,7 +328,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
       el.className = 'sugrow' + (i === selIdx ? ' sel' : '');
       const ic = document.createElement('span');
       ic.className = 'ic' + (r.kind === 'ai' ? ' ai' : '');
-      ic.innerHTML = r.kind === 'ai' ? '✦' : r.kind === 'go' ? I.search : r.kind === 'b' ? I.star : I.hist;
+      ic.innerHTML = r.kind === 'ai' ? '✦' : r.kind === 'go' ? I.search : r.kind === 'b' ? I.star : r.kind === 'm' ? I.mem : I.hist;
       const txt = document.createElement('span'); txt.className = 'txt';
       if (r.kind === 'ai') {
         txt.append('Ask AI: ');
@@ -332,7 +340,13 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
         txt.textContent = r.title || r.url;
       }
       el.appendChild(ic); el.appendChild(txt);
-      if (r.url) {
+      if (r.kind === 'm' && r.snip) {
+        // A page you've read whose text matches: show the matching passage, not the URL.
+        const sn = document.createElement('span'); sn.className = 'url';
+        sn.innerHTML = escapeHtml(r.snip).replace(/\u0002/g, '<b>').replace(/\u0003/g, '</b>');
+        sn.title = r.url;
+        el.appendChild(sn);
+      } else if (r.url) {
         const u = document.createElement('span'); u.className = 'url'; u.textContent = r.url;
         el.appendChild(u);
       }
@@ -423,12 +437,21 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
 
   const dotsHtml = '<div class="dots"><span></span><span></span><span></span></div>';
 
+  /// Headers for the local AI server: it requires the per-launch key Minima's pages are given.
+  function aiHeaders(key) {
+    const h = {'Content-Type':'application/json'};
+    if (key) h['Authorization'] = 'Bearer ' + key;
+    return h;
+  }
+
   function runInlineFetch(query, body) {
+    send('aiuse');
     fetch('http://127.0.0.1:' + state.aiPort + '/v1/chat/completions', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: aiHeaders(state.aiKey),
       body: JSON.stringify({messages:[{role:'user', content:query}], stream:true})
     }).then(async (res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '', full = '';
@@ -459,7 +482,9 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
       runInlineFetch(query, body);
       return;
     }
-    if (state.aiPhase >= 1 && state.aiPhase <= 4) {
+    // Installed but not running (first use, or unloaded while idle): start it and wait.
+    if (state.aiInstalled && state.aiPhase === 0) send('aistart');
+    if ((state.aiPhase >= 1 && state.aiPhase <= 4) || (state.aiInstalled && state.aiPhase === 0)) {
       pendingInlineQuery = query;
       pendingInlineBody = buildInlineBox(query, '<span style="color:#999">Starting the on-device AI…</span>');
       return;
@@ -479,17 +504,30 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     {label:'Bookmark this page', hint:'Ctrl+D', icon:I.star, run:() => send('bookmark')},
     {label:'Find in page', hint:'Ctrl+F', icon:I.search, run:() => window.__openFind()},
     {label:'Downloads', hint:'Ctrl+J', icon:I.dl, run:() => send('downloads')},
-    {label:'History', hint:'Ctrl+H', icon:I.hist, run:() => send('history')},
+    {label:'History & memory', hint:'Ctrl+H', icon:I.hist, run:() => send('history')},
+    {label:'Reader view', hint:'F9', icon:I.reader, run:() => send('reader')},
+    {label:'Bookmarks', hint:'', icon:I.bm, run:() => send('bookmarks')},
+    {label:'Import bookmarks from another browser', hint:'', icon:I.bm, run:() => send('settings')},
     {label:'Settings', hint:'Ctrl+,', icon:I.settings, run:() => send('settings')},
     {label:'Toggle ad & tracker blocking', hint:'', icon:I.shield, run:() => send('shield')},
     {label:'Reload page', hint:'Ctrl+R', icon:I.reload, run:() => send('reload')},
   ];
   function pcompute() {
     const q = pcmd.value.trim(), ql = q.toLowerCase();
-    let rows = COMMANDS.filter(c => !ql || c.label.toLowerCase().includes(ql));
+    let rows = COMMANDS.filter(c => (state.aiEnabled !== false || !c.ai) && (!ql || c.label.toLowerCase().includes(ql)));
     if (q) {
-      rows = rows.slice(0, 5);
-      rows.unshift({label:'Ask AI: ' + q, hint:'Enter', icon:'✦', ai:true, run:() => send('askai', q)});
+      rows = rows.slice(0, 4);
+      // Open tabs whose title or address matches — "switch to" beats opening a duplicate.
+      const tabRows = state.tabs
+        .filter(t => t.id !== state.active && ((t.title || '').toLowerCase().includes(ql) || (t.url || '').toLowerCase().includes(ql)))
+        .slice(0, 3)
+        .map(t => ({label:'Switch to: ' + (t.title || t.url), hint:'Tab', icon:I.globe, run:() => send('select', t.id)}));
+      // Exact commands and open tabs win Enter; free-form AI is the fallback when nothing matches.
+      rows = rows.concat(tabRows);
+      if (state.memory)
+        rows.push({label:'Search pages you’ve read: ' + q, hint:'', icon:I.mem, run:() => send('memsearch', q)});
+      if (state.aiEnabled !== false)
+        rows.push({label:'Ask AI: ' + q, hint:'', icon:'✦', ai:true, run:() => send('askai', q)});
       if (/\./.test(q) && !/\s/.test(q))
         rows.push({label:'Go to ' + q, hint:'', icon:I.globe, run:() => send('navigate', q)});
     }
@@ -534,6 +572,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
     else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
   });
 
+)HTML" LR"HTML(
   // ---- find-in-page bar (Ctrl+F) ----
   const findbarEl = document.getElementById('findbar');
   const fq = document.getElementById('fq');
@@ -592,6 +631,7 @@ static const wchar_t* kChromeHtml = LR"HTML(<!doctype html>
   document.getElementById('dl').onclick = () => send('downloads');
   document.getElementById('hist').onclick = () => send('history');
   document.getElementById('settings').onclick = () => send('settings');
+  document.getElementById('reader').onclick = () => send('reader');
 
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); send('reopen'); }
@@ -629,6 +669,17 @@ static const wchar_t* kStartHtmlHead = LR"HTML(<!doctype html>
   .tile span { font-size:12px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
                max-width:100%; color:#777; }
   .tile:hover .fav { background:rgba(74,128,245,.18); }
+  .more { margin-top:22px; font-size:13px; color:#3b82f6; text-decoration:none; cursor:pointer; background:none; border:none;
+          font-family:inherit; }
+  .more:hover { text-decoration:underline; }
+  .card { margin-top:38px; max-width:480px; padding:16px 18px; border-radius:14px; background:rgba(255,255,255,.75);
+          box-shadow:0 6px 24px rgba(0,0,0,.07); font-size:13.5px; line-height:1.5; }
+  @media (prefers-color-scheme: dark) { .card { background:rgba(255,255,255,.06); box-shadow:none; } }
+  .card b { display:block; font-size:14.5px; margin-bottom:3px; }
+  .card .why { color:#888; font-size:12.5px; }
+  .card .btns { display:flex; gap:8px; margin-top:12px; }
+  .card button { border:none; border-radius:8px; padding:7px 14px; font:13px "Segoe UI",system-ui; font-weight:600; cursor:pointer; }
+  .card .yes { background:#3b82f6; color:#fff; } .card .no { background:none; color:#888; }
 </style></head><body>
   <h1>minima</h1>
   <p class="hint">Press <b>Ctrl+L</b> and type to search or enter an address.</p>
@@ -764,13 +815,30 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
   const msgsEl = document.getElementById('msgs');
   const qEl = document.getElementById('q');
   const sendBtn = document.getElementById('send');
-  let history = [];
+  let history = [], chatShown = false, portWaiters = [];
 
   function showChat() {
+    if (chatShown) return;
+    chatShown = true;
     setupEl.style.display = 'none';
     chatEl.style.display = 'flex';
     qEl.focus();
     if (initialQuery) { qEl.value = initialQuery; initialQuery = ''; sendMsg(); }
+  }
+
+  /// Resolves once the engine is serving. It may be starting, or unloaded after sitting idle
+  /// (Settings > free memory when idle) — then this asks Minima to start it again.
+  function ensurePort() {
+    if (port > 0) return Promise.resolve();
+    window.chrome.webview.postMessage('ai-start');
+    return new Promise((res, rej) => {
+      portWaiters.push({res, rej});
+      setTimeout(() => rej(new Error('The on-device AI took too long to start.')), 180000);
+    });
+  }
+  function settleWaiters(err) {
+    const w = portWaiters; portWaiters = [];
+    for (const x of w) err ? x.rej(new Error(err)) : x.res();
   }
 
   goBtn.onclick = () => {
@@ -781,8 +849,15 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
     window.chrome.webview.postMessage('ai-start');
   };
 
-  window.__minimaAiStatus = (phase, downloaded, total, p, err) => {
-    if (phase === 5) { port = p; showChat(); return; }
+  window.__minimaAiStatus = (phase, downloaded, total, p, err, key) => {
+    if (typeof key === 'string') aiKey = key;
+    if (phase === 5) { port = p; showChat(); settleWaiters(); return; }
+    if (chatShown) {
+      // The chat stays up across engine restarts; the pending reply shows the wait.
+      if (phase === 0) port = 0;
+      if (phase === 6) { port = 0; settleWaiters(err || 'The on-device AI could not start.'); }
+      return;
+    }
     if (phase === 6) {
       setupMsg.textContent = err || 'Setup failed.';
       setupMsg.className = 'err';
@@ -808,8 +883,8 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
     }
   };
 
-  if (port > 0) {
-    showChat();
+  if (port > 0 || aiInstalled) {
+    showChat(); // installed but not yet running: the first message waits for it to start
   } else if (initPhase > 0) {
     window.__minimaAiStatus(initPhase, initDl, initTotal, 0, '');
   } else {
@@ -868,6 +943,7 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
     return html;
   }
 
+)HTML" LR"HTML(
   function addMsg(role, text) {
     const el = document.createElement('div');
     el.className = 'msg ' + (role === 'user' ? 'user' : 'ai');
@@ -888,7 +964,7 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
 
   async function sendMsg() {
     const text = qEl.value.trim();
-    if (!text || !port) return;
+    if (!text) return;
     qEl.value = '';
     autoGrow();
     addMsg('user', text);
@@ -897,11 +973,20 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
     aiEl.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
     sendBtn.disabled = true;
     try {
+      if (!port) {
+        aiEl.innerHTML = '<p style="color:#999">Starting the on-device AI…</p>';
+        await ensurePort();
+        aiEl.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+      }
+      window.chrome.webview.postMessage('ai-use');
+      const h = {'Content-Type':'application/json'};
+      if (aiKey) h['Authorization'] = 'Bearer ' + aiKey;
       const res = await fetch('http://127.0.0.1:' + port + '/v1/chat/completions', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: h,
         body: JSON.stringify({messages: history, stream: true})
       });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '', full = '';
@@ -929,7 +1014,10 @@ static const wchar_t* kAiHtmlTail = LR"HTML(
       }
       history.push({role:'assistant', content:full});
     } catch (e) {
-      aiEl.innerHTML = '<p style="color:#e0555f">Could not reach the AI engine.</p>';
+      history.pop(); // unanswered: keep user/assistant turns alternating (Gemma's template requires it)
+      const why = e && /start/.test(e.message) ? e.message : 'Could not reach the AI engine.';
+      aiEl.innerHTML = '<p style="color:#e0555f"></p>';
+      aiEl.firstChild.textContent = why;
     }
     autoGrow();
   }
@@ -992,6 +1080,9 @@ static const wchar_t* kSidebarHtml = LR"HTML(<!doctype html>
   .dots span { display:inline-block; width:6px; height:6px; border-radius:50%; background:#aaa; margin-right:4px;
                animation:b 1.2s infinite; } .dots span:nth-child(2){animation-delay:.15s;} .dots span:nth-child(3){animation-delay:.3s;}
   @keyframes b { 0%,80%,100%{transform:scale(.6);opacity:.4;} 40%{transform:scale(1);opacity:1;} }
+  .newpage { align-self:center; font-size:11.5px; color:#999; padding:2px 10px; border-radius:10px;
+             background:rgba(128,128,128,.12); max-width:100%; overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; }
   #input { display:flex; gap:7px; padding:11px 14px; border-top:1px solid rgba(0,0,0,.07); }
   @media (prefers-color-scheme: dark) { #input { border-color:rgba(255,255,255,.08); } }
   #q { flex:1; border:none; border-radius:16px; padding:9px 13px; background:rgba(0,0,0,.06); outline:none;
@@ -1035,10 +1126,26 @@ static const wchar_t* kSidebarHtml = LR"HTML(<!doctype html>
   const qEl = document.getElementById('q');
   const sendBtn = document.getElementById('send');
 
-  window.__sbState = (p, ph, title, url) => {
-    port = p; phase = ph; pageTitle = title || ''; pageUrl = url || '';
+  let aiKey = '', installed = false, portWaiters = [], ctxWaiter = null;
+
+  window.__sbState = (p, ph, title, url, key, inst) => {
+    const newUrl = url || '';
+    // A different page means a new conversation: earlier answers were about other content,
+    // and keeping them in the prompt would mix the two pages up.
+    if (newUrl !== pageUrl && pageUrl !== '' && history.length) {
+      history = [];
+      const d = document.createElement('div'); d.className = 'newpage';
+      d.textContent = 'New page · ' + (title || newUrl);
+      msgsEl.appendChild(d); msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+    port = p; phase = ph; pageTitle = title || ''; pageUrl = newUrl;
+    aiKey = key || ''; installed = !!inst;
     document.getElementById('ptitle').textContent = pageTitle || pageUrl || 'On-device AI';
-    if (port > 0) { setupEl.style.display = 'none'; mainEl.style.display = 'flex'; }
+    if (port > 0) { const w = portWaiters; portWaiters = []; w.forEach(x => x.res()); }
+    if (ph === 6) { const w = portWaiters; portWaiters = []; w.forEach(x => x.rej()); }
+    // Installed but not running yet (first use / unloaded when idle) still shows the chat:
+    // the next question starts the engine.
+    if (port > 0 || (installed && ph !== 6)) { setupEl.style.display = 'none'; mainEl.style.display = 'flex'; }
     else {
       setupEl.style.display = 'block'; mainEl.style.display = 'none';
       const labels = {1:'Downloading engine…',2:'Extracting…',3:'Downloading model…',4:'Starting engine…'};
@@ -1046,7 +1153,26 @@ static const wchar_t* kSidebarHtml = LR"HTML(<!doctype html>
       document.getElementById('go').style.display = (ph >= 1 && ph <= 4) ? 'none' : 'inline-block';
     }
   };
-  window.__sbContext = (text) => { pageText = text || ''; };
+  window.__sbContext = (text) => {
+    pageText = text || '';
+    if (ctxWaiter) { const r = ctxWaiter; ctxWaiter = null; r(); }
+  };
+  /// Asks Minima for the current page's text and waits until it arrives (or 2 s pass).
+  function refreshContext() {
+    return new Promise((r) => {
+      ctxWaiter = r;
+      send('sb-context');
+      setTimeout(() => { if (ctxWaiter === r) { ctxWaiter = null; r(); } }, 2000);
+    });
+  }
+  function waitForEngine() {
+    if (port > 0) return Promise.resolve();
+    send('sb-setup');
+    return new Promise((res, rej) => {
+      portWaiters.push({res, rej});
+      setTimeout(rej, 180000);
+    });
+  }
 
   document.getElementById('go').onclick = () => { sstatus.textContent = 'Starting…'; send('sb-setup'); };
   document.getElementById('close').onclick = () => send('sb-close');
@@ -1076,20 +1202,30 @@ static const wchar_t* kSidebarHtml = LR"HTML(<!doctype html>
   qEl.addEventListener('input', grow);
 
   async function ask(prompt){
-    if (!port) return;
-    send('sb-context'); // refresh page text for the current page
-    await new Promise(r => setTimeout(r, 60));
     addMsg('user', prompt);
     const aiEl = addMsg('ai',''); aiEl.innerHTML='<span class="dots"><span></span><span></span><span></span></span>';
     sendBtn.disabled = true;
+    const dots = aiEl.innerHTML;
+    try {
+      if (!port) {
+        aiEl.innerHTML = '<p style="color:#999">Starting the on-device AI…</p>';
+        await waitForEngine();
+        aiEl.innerHTML = dots;
+      }
+    } catch(e){ aiEl.innerHTML='<p style="color:#e0555f">The on-device AI could not start.</p>'; return; }
+    await refreshContext(); // the page may have changed since the sidebar last read it
     const sys = 'You are a helpful assistant answering questions about a web page the user is viewing. '
       + 'Use only the page content below. Be concise.\n\nPAGE TITLE: ' + pageTitle
       + '\nURL: ' + pageUrl + '\n\nPAGE CONTENT:\n' + pageText.slice(0, 7000);
     const msgs = [{role:'system', content:sys}].concat(history).concat([{role:'user', content:prompt}]);
     history.push({role:'user', content:prompt});
     try {
+      send('sb-use');
+      const headers = {'Content-Type':'application/json'};
+      if (aiKey) headers['Authorization'] = 'Bearer ' + aiKey;
       const res = await fetch('http://127.0.0.1:'+port+'/v1/chat/completions',
-        {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({messages:msgs, stream:true})});
+        {method:'POST', headers, body:JSON.stringify({messages:msgs, stream:true})});
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const rd = res.body.getReader(); const dec = new TextDecoder(); let buf='', full='';
       while(true){ const {done,value}=await rd.read(); if(done)break;
         buf+=dec.decode(value,{stream:true}); const ls=buf.split('\n'); buf=ls.pop();
@@ -1100,7 +1236,10 @@ static const wchar_t* kSidebarHtml = LR"HTML(<!doctype html>
         }
       }
       history.push({role:'assistant', content:full});
-    } catch(e){ aiEl.innerHTML='<p style="color:#e0555f">Could not reach the on-device AI engine.</p>'; }
+    } catch(e){
+      history.pop(); // unanswered — keep turns alternating for the chat template
+      aiEl.innerHTML='<p style="color:#e0555f">Could not reach the on-device AI engine.</p>';
+    }
   }
   function sendMsg(){ const t=qEl.value.trim(); if(!t)return; qEl.value=''; grow(); ask(t); }
   sendBtn.onclick = sendMsg;

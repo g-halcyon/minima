@@ -11,19 +11,40 @@ frameworks, no runtime layers: one small native executable. Cross-platform work
   popups/`target=_blank` open as tabs
 - **Navigation** — address bar with URL/search detection (searches go to Mojeek,
   a private engine with no tracking), back/forward (Alt+←/→), reload (Ctrl+R / F5)
-- **Bookmarks + history** — Ctrl+D / Ctrl+H, start-page tiles, address-bar suggestions
+- **Bookmarks + history** — Ctrl+D / Ctrl+H, start-page tiles, address-bar suggestions, a
+  Bookmarks page (by folder, filterable)
+- **Memory** (opt-in) — remembers the *text* of pages you read in a local SQLite full-text index,
+  so "that article about…" is findable from the address bar, the palette or History (Ctrl+H),
+  with highlighted passages. Never keeps sign-in/payment/account pages, pages with password
+  fields, or mail/chat sites; per-page Forget, per-site "never remember", forget-everything
+- **Reader view** (F9 or the book button when a page has an article) — clean, adjustable
+  typography (size, serif/sans, light/sepia/dark) and **read aloud** with the device's own voices.
+  The same article extraction gives the AI sidebar cleaner, smaller page context
+- **Import from Edge, Chrome, Brave, Vivaldi, Firefox** — bookmarks (with folders) and recent
+  history, in the setup wizard or Settings; **saves and fills passwords** (WebView2's built-in
+  manager, encrypted by Windows)
 - **Find in page** — Ctrl+F bar with match counts and highlight-all (native WebView2 Find)
-- **Session restore** — reopens your tabs on startup (toggle in Settings); **downloads** via
-  Ctrl+J or the toolbar button
+- **Session restore** — reopens your tabs on startup (toggle in Settings); only the active tab
+  loads right away, the rest load when first opened; **downloads** via Ctrl+J or the toolbar button
+- **Sleeping tabs** — background tabs unused for 10 minutes are suspended to save memory and
+  battery (tabs playing audio stay awake; toggle in Settings › Performance)
 - **Installable, default-browser ready** — single-instance (link clicks open as tabs in the
   running window), "Set as default browser" in Settings, `scripts\install.ps1` for a per-user
   install (Start menu, Default apps, uninstall entry) or `installer\minima.iss` for a setup.exe
 - **Ad & tracker blocking** — network-level, per-page block counter on the toolbar shield
-- **Extensions** — a curated one-click **catalog** (uBlock Origin, Stylus, Violentmonkey)
-  installed straight from their official releases, plus "install unpacked" for any
-  Chrome extension (WebView2's browser-extensions API)
+- **Extensions** — a curated one-click **catalog** (uBlock Origin Lite, Stylus, Violentmonkey)
+  installed straight from their official GitHub releases (falling back to the release pages
+  when the GitHub API rate-limits), plus "install unpacked" for any Chrome extension
+  (WebView2's browser-extensions API)
 - **On-device AI** — a managed `llama-server` sidecar running a small Gemma model, fully
   local. Powers inline answers, a full AI chat page, and the two signature features below.
+  On PCs with a Vulkan graphics driver it uses llama.cpp's Vulkan build in hybrid mode — the
+  GPU reads the page, the CPU writes the answer — so page summaries start ~2.5-3x sooner
+  (measured on an Iris Xe laptop), falling back to CPU-only if the driver fails.
+  It starts on first use and (by default) unloads after 10 idle minutes to give back its
+  ~1 GB of memory; a master switch in Settings turns every AI feature off, and the downloaded
+  files can be deleted there. The local server requires a per-launch key that only Minima's
+  own pages receive, so websites can't use your model.
 - **✦ Ask-this-page sidebar** — a docked AI panel that reads the current page and
   summarizes / answers questions about it, on-device — the page never leaves your machine
 - **✦ Command palette (Ctrl+K)** — a natural-language bar for commands ("summarize this",
@@ -57,6 +78,8 @@ http/https links. (`installer\minima.iss` builds a distributable setup.exe with 
 
 The WebView2 SDK lives in `vendor/webview2-pkg` (from NuGet, checked in for
 reproducible builds).
+SQLite 3.54.1 (amalgamation, public domain) is vendored in `vendor/sqlite` for Memory and
+browser import; `build.bat` compiles it once to `build\sqlite3.obj`.
 
 ## Architecture
 
@@ -108,5 +131,5 @@ Minima is source-available software licensed under the **[PolyForm Noncommercial
 - **Non-Commercial Use**: Free for personal, non-commercial, educational, hobby, and research purposes.
 - **Commercial Use**: Any commercial use, embedding in paid products, enterprise deployment, or monetization requires a separate **Commercial License** from **[g-halcyon](https://github.com/g-halcyon)**.
 
-See **[LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)** for details on commercial licensing options and inquiries. Third-party libraries located under `vendor/` (such as `llama.cpp`) retain their respective original open-source licenses (MIT).
+See **[LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)** for details on commercial licensing options and inquiries. Third-party libraries located under `vendor/` (such as `llama.cpp`) retain their respective original licenses (`llama.cpp`: MIT; SQLite: public domain).
 

@@ -12,7 +12,7 @@
 #
 # On Windows you can still use the dependency-free build.bat instead of CMake.
 cmake_minimum_required(VERSION 3.20)
-project(minima LANGUAGES CXX)
+project(minima LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,15 +31,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CORE_SOURCES
 )
 
+# SQLite (vendored amalgamation, public domain) backs Memory search + browser import.
+set(SQLITE_SOURCES vendor/sqlite/sqlite3.c)
+set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_DEFINITIONS
+    "SQLITE_ENABLE_FTS5;SQLITE_OMIT_LOAD_EXTENSION;SQLITE_DQS=0;SQLITE_DEFAULT_MEMSTATUS=0;SQLITE_OMIT_DEPRECATED;SQLITE_OMIT_JSON;SQLITE_OMIT_SHARED_CACHE;SQLITE_OMIT_EXPLAIN;SQLITE_OMIT_AUTHORIZATION;SQLITE_OMIT_PROGRESS_CALLBACK;SQLITE_OMIT_TCL_VARIABLE;SQLITE_OMIT_COMPLETE;SQLITE_OMIT_GET_TABLE;SQLITE_OMIT_UTF16;SQLITE_OMIT_TRACE;SQLITE_OMIT_INTROSPECTION_PRAGMAS;SQLITE_OMIT_DECLTYPE;SQLITE_UNTESTABLE;SQLITE_OMIT_COMPILEOPTION_DIAGS")
+if(MSVC)
+    set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/O1;/Gy;/W0")
+endif()
+
 if(WIN32)
     # --- Windows shell: Win32 + WebView2 (currently the whole app, in main.cpp) -------
-    add_executable(minima WIN32 src/main.cpp ${CORE_SOURCES} src/app.rc)
+    add_executable(minima WIN32 src/main.cpp ${CORE_SOURCES} ${SQLITE_SOURCES} src/app.rc)
     target_include_directories(minima PRIVATE
         src
+        vendor/sqlite
         vendor/webview2-pkg/build/native/include)
     target_compile_definitions(minima PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     if(MSVC)
-        target_compile_options(minima PRIVATE /utf-8 /EHsc /W3 /O2 /MT)
+        target_compile_options(minima PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8 /EHsc /W3> /O2 /MT)
     endif()
     target_link_libraries(minima PRIVATE
         "${CMAKE_SOURCE_DIR}/vendor/webview2-pkg/build/native/x64/WebView2LoaderStatic.lib"
